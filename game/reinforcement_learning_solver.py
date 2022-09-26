@@ -17,7 +17,7 @@ class RenderMode(Enum):
     CONSOLE = 2
 
 NODE_REWARD = 1.
-COMPLIANCE_WEIGHT = 20.
+COMPLIANCE_WEIGHT = 1.
 MAX_STEPS = 10000
 
 DirichletVoxels = [np.array([1, 24]), np.array([47, 24])]
@@ -37,7 +37,7 @@ def get_neighbors(matrix, rowNumber, colNumber):
                 if newCol >= 0 and newCol <= len(matrix)-1:
                     if newCol == colNumber and newRow == rowNumber:
                         continue
-                    neighbors.append((newCol,newRow))
+                    neighbors.append((newRow,newCol))
     return neighbors
 
 def reward_voxels(agent_state):
@@ -50,17 +50,16 @@ def reward_voxels(agent_state):
 
 class BridgeEnvironment(Env):
     def init_reward_matrix(self):
-        self.reward_matrix = np.zeros_like(self.bridge_state)
+        self.reward_matrix = np.zeros_like(self.bridge_state, dtype=float)
         for voxel in Voxels:
             idx = tuple(voxel)
-            print(idx)
             self.reward_matrix[idx]=NODE_REWARD
             neighbors = get_neighbors(self.bridge_state, idx[0], idx[1])
             for neighbor in neighbors:
                 self.reward_matrix[neighbor]=NODE_REWARD*0.5
         plt.figure()
         plt.imshow(self.reward_matrix)
-        plt.figure()
+        plt.show()
 
     def init_game_variables(self):
         self.n_pixels:int=50
@@ -75,8 +74,6 @@ class BridgeEnvironment(Env):
         x_init = 0
         y_init = 24
         self.agent_state = np.array([x_init,y_init])
-
-        self.init_reward_matrix()
 
     def get_game_state(self):
         flat_bridge = self.bridge_state.flatten()
@@ -93,7 +90,8 @@ class BridgeEnvironment(Env):
 
         # game variables
         self.init_game_variables()
-        
+        self.init_reward_matrix()
+
         # state and action space
         self.observation_shape = (2+self.n_pixels**2,)
         lower = np.zeros(self.observation_shape)
@@ -117,9 +115,7 @@ class BridgeEnvironment(Env):
             print(self.agent_state)
         else:
             render_state = np.asarray(self.bridge_state, dtype="float")
-            for voxel in Voxels:
-                idx = tuple(voxel)
-                render_state[idx] = 0.5
+            render_state += self.reward_matrix
             cv2.imshow('Game', render_state)
             cv2.waitKey(1)
         
@@ -161,7 +157,8 @@ class BridgeEnvironment(Env):
             compliance_score = compliance.getComplianceFromIndicator(comp_bridge_state)
             history.append(compliance)
             # and add to reward
-            reward = reward - compliance_score*COMPLIANCE_WEIGHT
+            reward -= compliance_score*COMPLIANCE_WEIGHT
+            print(reward)
             #TODO: Zusammenhang reward REINFORCMENENT Algo
             self.render()
         
