@@ -10,23 +10,24 @@ import compliance
 import stable_baselines3 as bl
 from stable_baselines3.common.env_checker import check_env
 
+# save some history during learning
 history = []
 
 class RenderMode(Enum):
     GUI = 1
     CONSOLE = 2
 
-NODE_REWARD = 1.
+NODE_REWARD = 5.
 COMPLIANCE_WEIGHT = 1.
 MAX_STEPS = 10000
 
+## Boundary conditions
 DirichletVoxels = [np.array([1, 24]), np.array([47, 24])]
 NeumannVoxelsX = []
 NeumannVoxelsY = [np.array([24,24])]
 Voxels = DirichletVoxels + NeumannVoxelsX + NeumannVoxelsY
 
-history=[]
-
+## Get neighbours of one 2d-idx tuple
 def get_neighbors(matrix, rowNumber, colNumber):
     neighbors = []
     for rowAdd in range(-1, 2):
@@ -40,16 +41,9 @@ def get_neighbors(matrix, rowNumber, colNumber):
                     neighbors.append((newRow,newCol))
     return neighbors
 
-def reward_voxels(agent_state):
-    for voxel in Voxels:
-        if (agent_state==voxel).all():
-            return NODE_REWARD
-        elif np.linalg.norm(agent_state-voxel)<1.8: #<2
-            return NODE_REWARD*0.5
-    return 0.
-
 class BridgeEnvironment(Env):
-    def init_reward_matrix(self):
+    # Define rewards for filling certain pixels
+    def init_reward_matrix(self, show_reward_matrix = True):
         self.reward_matrix = np.zeros_like(self.bridge_state, dtype=float)
         for voxel in Voxels:
             idx = tuple(voxel)
@@ -57,10 +51,17 @@ class BridgeEnvironment(Env):
             neighbors = get_neighbors(self.bridge_state, idx[0], idx[1])
             for neighbor in neighbors:
                 self.reward_matrix[neighbor]=NODE_REWARD*0.5
-        plt.figure()
-        plt.imshow(self.reward_matrix)
-        plt.show()
+        if show_reward_matrix:
+            plt.figure()
+            plt.imshow(self.reward_matrix)
+            plt.show()
+    
+    # Adapt the initial state to converge faster to a sensible structure
+    def adapt_initial_state(self):
+        self.bridge_state[:,24]=1.
+        self.material_used = np.sum(self.bridge_state)
 
+    # Initialize and reset game variables
     def init_game_variables(self):
         self.n_pixels:int=50
         self.grid_size=(self.n_pixels,self.n_pixels)
@@ -70,16 +71,19 @@ class BridgeEnvironment(Env):
         self.max_material = int(self.n_pixels**2*0.12)
 
         self.bridge_state = np.zeros(self.grid_size,dtype=bool)
+        self.adapt_initial_state()
 
         x_init = 0
         y_init = 24
         self.agent_state = np.array([x_init,y_init])
 
+    # Return game state as concatenation of flattened brigde and agent(cursor) state
     def get_game_state(self):
         flat_bridge = self.bridge_state.flatten()
         flat_agent = self.agent_state.flatten()#should have no effect
         return np.concatenate((flat_agent,flat_bridge))
 
+    # Returns true if the move does not bring us outside of the grid
     def is_move_valid(self, action):
         new_agent_state = self.agent_state + self.action_move[action]
         valid:bool = np.logical_and(new_agent_state>=0, new_agent_state<self.n_pixels).all()
@@ -102,12 +106,13 @@ class BridgeEnvironment(Env):
         self.action_str = {0: "UP_Fill", 1:"RIGHT_Fill", 2:"DOWN_Fill", 3:"LEFT_Fill"}
         self.action_move = {0: np.array([0,1]), 1: np.array([1,0]), 2: np.array([0,-1]), 3:np.array([-1,0])}
 
+    # Reset all game variables to the starting values
     def reset(self):
         self.init_game_variables()
-        assert(self.material_used==0)
-        assert(np.sum(self.bridge_state)==0)
+        assert(self.material_used==np.sum(self.bridge_state))
         return self.get_game_state()
 
+    # Render the current state
     def render(self, mode=RenderMode.GUI):
         #cv2.resizeWindow('Game', 1000,1000)
         if mode==RenderMode.CONSOLE:
@@ -138,7 +143,7 @@ class BridgeEnvironment(Env):
                 self.bridge_state[idx]=1
                 self.material_used+=1
                 # reward new pixel
-                reward+=reward_voxels(self.agent_state)
+                reward+=self.reward_matrix[idx]
 
         self.steps_taken=self.steps_taken+1
         material_is_used_up = self.material_used == self.max_material
