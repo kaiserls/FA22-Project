@@ -21,4 +21,10 @@ def getComplianceFromIndicator(indicator):
     U = fcm.solve(K, F)
     
     compliance = np.transpose(F)@U
+    print(f"Compliance value is {compliance}")
     return compliance
+
+
+# indicator = np.loadtxt("indicator1.txt", dtype=float)
+# comp = getComplianceFromIndicator(indicator=indicator)
+# print(comp)
