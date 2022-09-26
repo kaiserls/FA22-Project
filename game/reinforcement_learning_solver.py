@@ -17,7 +17,7 @@ class RenderMode(Enum):
     GUI = 1
     CONSOLE = 2
 
-NODE_REWARD = 5.
+NODE_REWARD = 10.
 COMPLIANCE_WEIGHT = 1.
 MAX_STEPS = 10000
 
@@ -45,15 +45,24 @@ class BridgeEnvironment(Env):
     # Define rewards for filling certain pixels
     def init_reward_matrix(self, show_reward_matrix = True):
         self.reward_matrix = np.zeros_like(self.bridge_state, dtype=float)
+        # add reward to run thrrough and around voxels
         for voxel in Voxels:
             idx = tuple(voxel)
             self.reward_matrix[idx]=NODE_REWARD
             neighbors = get_neighbors(self.bridge_state, idx[0], idx[1])
             for neighbor in neighbors:
                 self.reward_matrix[neighbor]=NODE_REWARD*0.5
+        # add reward for staining away from boundaries
+        # TODO: Bug? or visualization buggy?
+        # for i in range(0,self.n_pixels):
+        #     for j in range(0, self.n_pixels):
+        #         y_dist = np.abs(self.n_pixels//2-j)
+        #         self.reward_matrix[i,j]-=y_dist*0.2
+
         if show_reward_matrix:
             plt.figure()
-            plt.imshow(self.reward_matrix)
+            plt.imshow(self.reward_matrix.T)
+            plt.colorbar()
             plt.show()
     
     # Adapt the initial state to converge faster to a sensible structure
@@ -70,7 +79,7 @@ class BridgeEnvironment(Env):
         self.material_used:int = 0
         self.max_material = int(self.n_pixels**2*0.12)
 
-        self.bridge_state = np.zeros(self.grid_size,dtype=bool)
+        self.bridge_state = np.zeros(self.grid_size,dtype=float)
         self.adapt_initial_state()
 
         x_init = 0
@@ -99,9 +108,9 @@ class BridgeEnvironment(Env):
         # state and action space
         self.observation_shape = (2+self.n_pixels**2,)
         lower = np.zeros(self.observation_shape)
-        upper = np.ones(self.observation_shape)*self.n_pixels
+        upper = np.ones(self.observation_shape)
         upper[0]=upper[1]=self.n_pixels-1
-        self.observation_space = spaces.Box(low=lower, high=upper, dtype=int)
+        self.observation_space = spaces.Box(low=lower, high=upper, dtype=float)
         self.action_space = spaces.Discrete(4,)# 4 moves///// and 4 empty moves
         self.action_str = {0: "UP_Fill", 1:"RIGHT_Fill", 2:"DOWN_Fill", 3:"LEFT_Fill"}
         self.action_move = {0: np.array([0,1]), 1: np.array([1,0]), 2: np.array([0,-1]), 3:np.array([-1,0])}
@@ -119,31 +128,25 @@ class BridgeEnvironment(Env):
             print(self.bridge_state)
             print(self.agent_state)
         else:
-            render_state = np.asarray(self.bridge_state, dtype="float")
-            render_state += self.reward_matrix
-            cv2.imshow('Game', render_state)
+            cv2.imshow('Game', self.bridge_state+self.reward_matrix)
             cv2.waitKey(1)
         
     def step(self, action, rendering=True):
-        assert self.action_space.contains(action)
-        # print(self.material_used)
         reward:float = 0.
-
         # check valid
         valid_move = self.is_move_valid(action)
         if not valid_move:
-            #TODO: Do we need penalty?
             reward = -10.
-            pass
         else:
             # valid moves:
             self.agent_state += self.action_move[action]
             idx = tuple(self.agent_state)
-            if self.bridge_state[idx]!=1:
-                self.bridge_state[idx]=1
-                self.material_used+=1
+            if self.bridge_state[idx]<0.001:# not filled yet
+                self.bridge_state[idx]=1.
+                self.material_used+=1.
                 # reward new pixel
                 reward+=self.reward_matrix[idx]
+        #print(reward)
 
         self.steps_taken=self.steps_taken+1
         material_is_used_up = self.material_used == self.max_material
@@ -153,17 +156,14 @@ class BridgeEnvironment(Env):
             print("Maximal stepsize reached before material used up")
         if material_is_used_up:
             print("Used all material")
-        #print(self.max_material, self.material_used)
 
         if done:
-            # calc compliance
-            print("material wtf: ", np.sum(self.bridge_state))
-            comp_bridge_state = np.asarray(self.bridge_state, dtype=float)
-            compliance_score = compliance.getComplianceFromIndicator(comp_bridge_state)
-            history.append(compliance)
-            # and add to reward
-            reward -= compliance_score*COMPLIANCE_WEIGHT
+            compliance_score = compliance.getComplianceFromIndicator(self.bridge_state) # calc compliance
+            reward -= compliance_score*COMPLIANCE_WEIGHT # and add to reward
+
             print(reward)
+            history.append(compliance)
+
             #TODO: Zusammenhang reward REINFORCMENENT Algo
             self.render()
         
@@ -195,8 +195,7 @@ if __name__ == "__main__":
     # start visualization
     cv2.namedWindow('Game',cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Game', 1000, 1000)
-    render_state = np.asarray(env.bridge_state, dtype="float")
-    cv2.imshow('Game', render_state)
+    cv2.imshow('Game', env.bridge_state)
 
     #screen = env.render(mode=RenderMode.GUI)
     
@@ -211,8 +210,7 @@ if __name__ == "__main__":
 
     cv2.namedWindow('Game',cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Game', 1000, 1000)
-    render_state = np.asarray(env.bridge_state, dtype="float")
-    cv2.imshow('Game', render_state)
+    cv2.imshow('Game', env.bridge_state)
 
     plt.figure()
     plt.plot(history)
