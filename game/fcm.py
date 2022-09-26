@@ -4,6 +4,11 @@ import scipy.sparse.linalg
 import time
 import matplotlib.pyplot as plt
 
+from numba import jit
+
+gp, gw = np.polynomial.legendre.leggauss(4)
+
+@jit(nopython=True)
 def shapeFunctions(xi, eta):
     N = np.zeros(9)
     N[0] = 0.25 * (1. - xi)*(1. - eta)
@@ -17,6 +22,7 @@ def shapeFunctions(xi, eta):
     N[8] = 0.0625 * 6. * (eta**2 - 1.) * (xi**2 - 1.)
     return N
 
+@jit(nopython=True)
 def shapeFunctionDerivatives(xi, eta): 
     """derivatives with respect to xi and eta"""
     dN = np.zeros((2, 9))
@@ -39,7 +45,8 @@ def shapeFunctionDerivatives(xi, eta):
     dN[0, 8] = 0.125 * 6. * (eta**2 - 1.) * xi
     dN[1, 8] = 0.125 * 6. * eta * (xi**2 - 1.)
     return dN
-    
+
+@jit(nopython=True)
 def strainDisplacementMatrix(xi, eta, s):
     """derivatives are adjusted with the element length s"""
     dN = shapeFunctionDerivatives(xi, eta) * 2. / s
@@ -50,7 +57,8 @@ def strainDisplacementMatrix(xi, eta, s):
         B[2, i * 2] = dN[1, i]
         B[2, i * 2 + 1] = dN[0, i]
     return B
-    
+
+@jit(nopython=True)
 def planeStressConstitutiveMatrix(E, nu):
     C = np.array([[1., nu, 0.],
                   [nu, 1., 0.],
@@ -58,10 +66,10 @@ def planeStressConstitutiveMatrix(E, nu):
     C *= E / (1. - nu**2)
     return C
 
+@jit(nopython=True)
 def localStiffnessMatrix(E, nu, s):
     K = np.zeros((18, 18))
     C = planeStressConstitutiveMatrix(E, nu)
-    gp, gw = np.polynomial.legendre.leggauss(4)
     
     for i in range(len(gp)):
         for j in range(len(gp)):
@@ -74,8 +82,9 @@ def localStiffnessMatrix(E, nu, s):
     
     return K
 
+#@jit(nopython=True)
 def eft(i, j, n):
-    eft = [((n * 2 + 1) * 2 * j + i * 2) * 2, 
+    eft = np.array([((n * 2 + 1) * 2 * j + i * 2) * 2, 
            ((n * 2 + 1) * 2 * j + i * 2) * 2 + 1,
            ((n * 2 + 1) * 2 * j + 2 + i * 2) * 2,
            ((n * 2 + 1) * 2 * j + 2 + i * 2) * 2 + 1,
@@ -92,9 +101,10 @@ def eft(i, j, n):
            ((n * 2 + 1) * (2 * j + 1) + i * 2) * 2,
            ((n * 2 + 1) * (2 * j + 1) + i * 2) * 2 + 1,
            ((n * 2 + 1) * (2 * j + 1) + 1 + i * 2) * 2,
-           ((n * 2 + 1) * (2 * j + 1) + 1 + i * 2) * 2 + 1]
+           ((n * 2 + 1) * (2 * j + 1) + 1 + i * 2) * 2 + 1])
     return eft
 
+#@jit(nopython=True)
 def globalStiffnessMatrix(E, nu, indicator, alpha, n):
     start = time.perf_counter()
     Ke = localStiffnessMatrix(E, nu, 1. / n)
@@ -107,35 +117,40 @@ def globalStiffnessMatrix(E, nu, indicator, alpha, n):
             K[np.ix_(index, index)] += indicatoralpha[i, j] * Ke
             
     end = time.perf_counter()
-    print("Elapsed time during assembly: {:2f}".format(end-start))
+    # print("Elapsed time during assembly: {:2f}".format(end-start))
     return K
 
+#@jit(nopython=True)
 def applyHomogeneousDirichletBCs(K, BCs):
     for i in range(len(BCs)):
         K[:, BCs[i]] = 0.
         K[BCs[i], :] = 0.
         K[BCs[i], BCs[i]] = 1.
     return K
-    
+
+#@jit(nopython=True)
 def globalForceVectorFromNeumannBCs(BCs, n):
     F = np.zeros((2 * (2*n+1) ** 2))
     for i in range(len(BCs)):
         F[BCs[i][0]] = BCs[i][1]
     return F
 
+#@jit(nopython=True)
 def solve(K, F):
     start = time.perf_counter()
     U = scipy.sparse.linalg.spsolve(K.tocsr(), F, use_umfpack=True)
     end = time.perf_counter()
-    print("Elapsed time during solving: {:2f}".format(end-start))
+    #print("Elapsed time during solving: {:2f}".format(end-start))
     return U
 
+@jit(nopython=True)
 def coordinatesFromDegreeOfFreedom(i, n):
     s = 0.5 / n # half element length
     x = ((i % (2 * (1 + 2 * n))) // 2) * s
     y = (i // (2 * (1 + 2 * n))) * s
     return np.array([x, y])
     
+@jit(nopython=True)
 def getDisplacements(U, n, gps=3):
     Ux = np.zeros((gps * n, gps * n))
     Uy = np.zeros((gps * n, gps * n))
@@ -177,7 +192,8 @@ def getVonMisesStress(U, E, nu, n, gps=3):
                     sigVonMisese = np.sqrt(sige[0]**2 + sige[1]**2 -sige[0]*sige[1] + 3*sige[2]**2)
                     sigVonMises[j * gps + jeta, i * gps + ixi] = sigVonMisese
     return sigVonMises
-         
+
+@jit(nopython=True)
 def getPostProcessingGrid(n, gps=3):
     gp, gw = np.polynomial.legendre.leggauss(gps)
     gp /= 2. * n
