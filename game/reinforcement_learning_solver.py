@@ -22,7 +22,7 @@ MAX_STEPS = 10000
 
 DirichletVoxels = [np.array([1, 24]), np.array([47, 24])]
 NeumannVoxelsX = []
-NeumannVoxelsY = [np.array([[24,24]])]
+NeumannVoxelsY = [np.array([24,24])]
 Voxels = DirichletVoxels + NeumannVoxelsX + NeumannVoxelsY
 
 history=[]
@@ -53,9 +53,14 @@ class BridgeEnvironment(Env):
         self.reward_matrix = np.zeros_like(self.bridge_state)
         for voxel in Voxels:
             idx = tuple(voxel)
+            print(idx)
             self.reward_matrix[idx]=NODE_REWARD
             neighbors = get_neighbors(self.bridge_state, idx[0], idx[1])
-            self.reward_matrix[neighbors]=NODE_REWARD*0.5
+            for neighbor in neighbors:
+                self.reward_matrix[neighbor]=NODE_REWARD*0.5
+        plt.figure()
+        plt.imshow(self.reward_matrix)
+        plt.figure()
 
     def init_game_variables(self):
         self.n_pixels:int=50
@@ -70,6 +75,8 @@ class BridgeEnvironment(Env):
         x_init = 0
         y_init = 24
         self.agent_state = np.array([x_init,y_init])
+
+        self.init_reward_matrix()
 
     def get_game_state(self):
         flat_bridge = self.bridge_state.flatten()
