@@ -19,7 +19,6 @@ def getComplianceFromIndicator(indicator):
     K = fcm.applyHomogeneousDirichletBCs(K, DirichletBCs)
     U = fcm.solve(K, F)
     compliance = np.transpose(F)@U
-    print(f"Compliance value is {compliance}")
     return compliance
 
 

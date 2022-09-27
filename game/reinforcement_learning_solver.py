@@ -1,3 +1,4 @@
+#import torch -> TODO: If import torch, change default type to double, because our problem is not well conditioned and we need the accuracy in calculation
 import gym
 from gym import Env, spaces
 import numpy as np
@@ -11,15 +12,17 @@ import stable_baselines3 as bl
 from stable_baselines3.common.env_checker import check_env
 
 # save some history during learning
-history = {"Steps_taken": [], "Material_left": [], "reward": [], "cum_reward": [], "compliance_score": []}
+history = {"Steps_taken": [], "Material_left": [], "reward": [], "cum_reward": [], "compliance_score": [], "hit_boundary": []}
 
 class RenderMode(Enum):
     GUI = 1
     CONSOLE = 2
 
+MATERIAL_REWARD=1.
 NODE_REWARD = 2.
-COMPLIANCE_WEIGHT = 400.*4
-MAX_STEPS = 2000
+BOUNDARY_PENALTY=2.
+COMPLIANCE_WEIGHT = 4000
+MAX_STEPS = 10000
 
 ## Boundary conditions
 DirichletVoxels = [np.array([1, 24]), np.array([47, 24])]
@@ -42,8 +45,19 @@ def get_neighbors(matrix, rowNumber, colNumber):
     return neighbors
 
 class BridgeEnvironment(Env):
+    def calc_base_compliance(self):
+        self.reset()
+        self.base_compliance = compliance.getComplianceFromIndicator(self.bridge_state)
+        print(f"The base compliance value is: {self.base_compliance}")
+
+    def get_compliance_reward(self):
+        #TODO: "Dirty"
+        self.compliance_score = compliance.getComplianceFromIndicator(self.bridge_state) # calc compliance
+        #return 1./(self.base_compliance-self.compliance_score) * COMPLIANCE_WEIGHT # and add to reward
+        return (100.-0.11*self.compliance_score) * 2
+        #return (1./self.compliance_score - 1./self.base_compliance) * COMPLIANCE_WEIGHT
     # Define rewards for filling certain pixels
-    def init_reward_matrix(self, show_reward_matrix = False):
+    def init_reward_matrix(self, show_reward_matrix = True):
         self.reward_matrix = np.zeros_like(self.bridge_state, dtype=float)
 
         # add reward to run thrrough and around voxels
@@ -83,11 +97,12 @@ class BridgeEnvironment(Env):
         self.bridge_state = np.zeros(self.grid_size,dtype=float)
         self.adapt_initial_state()
 
-        x_init = 0
+        x_init = 24
         y_init = 24
         self.agent_state = np.array([x_init,y_init])
 
         self.cum_reward = 0.
+        self.hit_boundary = 0
 
     # Return game state as concatenation of flattened brigde and agent(cursor) state
     def get_game_state(self):
@@ -101,15 +116,18 @@ class BridgeEnvironment(Env):
         valid:bool = np.logical_and(new_agent_state>=0, new_agent_state<self.n_pixels).all()
         return valid
 
-    def __init__(self):
+    def __init__(self, render_episode=False):
         super(BridgeEnvironment, self).__init__()
+        # output
+        self.render_episode = render_episode
 
         # game variables
         self.init_game_variables()
+        self.calc_base_compliance()
         self.init_reward_matrix()
 
         # state and action space
-        self.observation_shape = (2+self.n_pixels**2,)
+        self.observation_shape = (self.n_pixels**2+2,)
         lower = np.zeros(self.observation_shape)
         upper = np.ones(self.observation_shape)
         upper[0]=upper[1]=self.n_pixels-1
@@ -131,15 +149,16 @@ class BridgeEnvironment(Env):
             print(self.bridge_state)
             print(self.agent_state)
         else:
-            cv2.imshow('Game', self.bridge_state.T)#+self.reward_matrix)
+            cv2.imshow('Game', self.bridge_state.T)
             cv2.waitKey(1)
         
-    def step(self, action, rendering=False, render_episode=False, keep_history=True):
+    def step(self, action, render_step=False, keep_history=True):
         reward:float = 0.
         # check valid
         valid_move = self.is_move_valid(action)
         if not valid_move:
-            reward -= 10.
+            self.hit_boundary+=1
+            reward -= BOUNDARY_PENALTY
         else:
             # valid moves:
             self.agent_state += self.action_move[action]
@@ -156,26 +175,27 @@ class BridgeEnvironment(Env):
         done = material_is_used_up or maximal_step_size_reached
         material_left = self.max_material - self.material_used
 
-
+        
         if done:
-            compliance_score = compliance.getComplianceFromIndicator(self.bridge_state) # calc compliance
-            reward += 1./compliance_score * COMPLIANCE_WEIGHT # and add to reward
+            reward += self.get_compliance_reward()
+            self.cum_reward+=reward
 
             if keep_history:
-                history_update = {"Steps_taken": self.steps_taken, "Material_left": material_left, "reward": reward, "cum_reward": self.cum_reward, "compliance_score": compliance_score}
+                history_update = {"Steps_taken": self.steps_taken, "Material_left": material_left, "reward": reward, "cum_reward": self.cum_reward, "compliance_score": self.compliance_score, "hit_boundary": self.hit_boundary}
+                print(history_update)
                 for key, val in history_update.items():
                     history[key].append(val)
-
+            
             #TODO: Zusammenhang reward REINFORCMENENT Algo
-            if render_episode:
+            if self.render_episode:
                 self.render()
+        else:
+            self.cum_reward+=reward
         
         info:dict = {} #{"Done": done, "Material left": material_left, "steps taken": self.steps_taken}
         state = self.get_game_state()
 
-        self.cum_reward+=reward
-
-        if rendering:
+        if render_step:
             self.render()
         return state, reward, done, info
     
@@ -190,33 +210,14 @@ class BridgeEnvironment(Env):
     #     self.canvas[25,25]
 
 
-if __name__ == "__main__":
-    # check if env is correctly set up
-    env = BridgeEnvironment()
-    check_env(env)
-
-    # start visualization
-    rendering=False
-    if rendering:
-        cv2.namedWindow('Game',cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Game', 1000, 1000)
-        cv2.imshow('Game', env.bridge_state.T)
-    
-    # train
-    model = bl.A2C("MlpPolicy", env, verbose=1)
-    model.learn(total_timesteps=10000)
-    model.save("a2c_bridge")
-    
-    # save history:
-    np.save('training_history.npy', history)
-
-    print("FINISHED TRAINING----------------------------------------------------------------------------")
-
-
+def evaluate(visualize_trained_model = True, plot_history = True):
     # visualize
-    visualize_trained_model = False
     if visualize_trained_model:
+        env = BridgeEnvironment(render_episode=True)
         obs = env.reset()
+        model = bl.A2C("MlpPolicy", env, verbose=0) #device=device
+        model.load("a2c_bridge_trained")
+        
 
         cv2.namedWindow('Game',cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Game', 1000, 1000)
@@ -225,8 +226,48 @@ if __name__ == "__main__":
         done = False
         while not done:
             action, _states = model.predict(obs)
-            obs, rewards, done, info = env.step(action)
+            obs, rewards, done, info = env.step(action,render_step=True)
             if done:
                 print("Filled: ", np.sum(env.bridge_state))
                 print("Rewards: ", rewards)
                 break
+    
+    if plot_history:
+        history = np.load('training_history_trained.npy',allow_pickle=True).item()
+        plt.figure()
+        for key, value in history.items():
+            if key!="cum_reward":
+                plt.plot(value, label=key)
+        plt.legend()
+        plt.show()
+
+
+
+
+if __name__ == "__main__":
+    # visualize?
+    rendering=True
+
+    train = True
+    if train:
+        # check if env is correctly set up
+        env = BridgeEnvironment(render_episode=rendering)
+        check_env(env)
+
+        # start visualization
+        if rendering:
+            cv2.namedWindow('Game',cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('Game', 1000, 1000)
+            cv2.imshow('Game', env.bridge_state.T)
+
+        # train
+        model = bl.A2C("MlpPolicy", env, verbose=0) #device=device
+        model.learn(total_timesteps=11000000)
+        model.save("a2c_bridge")
+        
+        # save history:
+        np.save('training_history.npy', history)
+
+        print("FINISHED TRAINING----------------------------------------------------------------------------")
+    else:
+        evaluate()
