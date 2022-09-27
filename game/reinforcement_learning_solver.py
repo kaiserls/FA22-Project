@@ -18,11 +18,33 @@ class RenderMode(Enum):
     GUI = 1
     CONSOLE = 2
 
-MATERIAL_REWARD=1.
-NODE_REWARD = 2.
+TOTAL_MATERIAL_REWARD=3.
+REACH_OTHER_SIDE_REWARD=10.
+TOTAL_NODE_REWARD = 20.
 BOUNDARY_PENALTY=2.
-COMPLIANCE_WEIGHT = 4000
-MAX_STEPS = 10000
+INV_WEIGHT = 200.
+
+C_BASE = 906.#WILL BE OVERWRITTEN!
+C_OPT = 2.
+
+REWARD_BASE = 0.
+REWARD_OPT = 200.
+
+def linear_reward(comp):
+    a = REWARD_OPT/(C_OPT-C_BASE)
+    b = -C_BASE*REWARD_OPT/(C_OPT-C_BASE)
+    return a*comp+b
+
+def inverse_reward(comp):
+    return (1./comp - 1./C_BASE)*INV_WEIGHT
+
+def balanced_reward(comp):
+    alpha = 0.4
+    inv_r = inverse_reward(comp)
+    lin_r = linear_reward(comp)
+    return alpha*inv_r + (1.-alpha)*lin_r
+
+MAX_STEPS = 2000
 
 ## Boundary conditions
 DirichletVoxels = [np.array([1, 24]), np.array([47, 24])]
@@ -48,25 +70,25 @@ class BridgeEnvironment(Env):
     def calc_base_compliance(self):
         self.reset()
         self.base_compliance = compliance.getComplianceFromIndicator(self.bridge_state)
+        C_BASE = self.base_compliance
         print(f"The base compliance value is: {self.base_compliance}")
 
     def get_compliance_reward(self):
-        #TODO: "Dirty"
         self.compliance_score = compliance.getComplianceFromIndicator(self.bridge_state) # calc compliance
-        #return 1./(self.base_compliance-self.compliance_score) * COMPLIANCE_WEIGHT # and add to reward
-        return (100.-0.11*self.compliance_score) * 2
-        #return (1./self.compliance_score - 1./self.base_compliance) * COMPLIANCE_WEIGHT
+        return balanced_reward(self.compliance_score)
+
     # Define rewards for filling certain pixels
-    def init_reward_matrix(self, show_reward_matrix = True):
+    def init_reward_matrix(self, show_reward_matrix = False):
         self.reward_matrix = np.zeros_like(self.bridge_state, dtype=float)
 
         # add reward to run thrrough and around voxels
+        rewarded_points = 9*len(Voxels)
         for voxel in Voxels:
             idx = tuple(voxel)
-            self.reward_matrix[idx]=NODE_REWARD
+            self.reward_matrix[idx]=TOTAL_NODE_REWARD/rewarded_points
             neighbors = get_neighbors(self.bridge_state, idx[0], idx[1])
             for neighbor in neighbors:
-                self.reward_matrix[neighbor]=NODE_REWARD*0.5
+                self.reward_matrix[neighbor]=TOTAL_NODE_REWARD/rewarded_points
         # add reward for staining away from boundaries
         # TODO: Bug? or visualization buggy?
         # for i in range(0,self.n_pixels):
@@ -83,6 +105,9 @@ class BridgeEnvironment(Env):
     # Adapt the initial state to converge faster to a sensible structure
     def adapt_initial_state(self):
         self.bridge_state[:,24]=1.
+        self.bridge_state[36,24:32]=1.
+        self.bridge_state[24,24:38]=1.
+        self.bridge_state[12,24:32]=1.
         self.material_used = np.sum(self.bridge_state)
 
     # Initialize and reset game variables
@@ -97,7 +122,7 @@ class BridgeEnvironment(Env):
         self.bridge_state = np.zeros(self.grid_size,dtype=float)
         self.adapt_initial_state()
 
-        x_init = 24
+        x_init = 1
         y_init = 24
         self.agent_state = np.array([x_init,y_init])
 
@@ -158,7 +183,8 @@ class BridgeEnvironment(Env):
         valid_move = self.is_move_valid(action)
         if not valid_move:
             self.hit_boundary+=1
-            reward -= BOUNDARY_PENALTY
+            if np.abs(self.agent_state[1]-self.n_pixels/2.)>3.: # Dont penalize in the middle because there are the voxels!
+                reward -= BOUNDARY_PENALTY
         else:
             # valid moves:
             self.agent_state += self.action_move[action]
@@ -166,8 +192,11 @@ class BridgeEnvironment(Env):
             if self.bridge_state[idx]<0.001:# not filled yet
                 self.bridge_state[idx]=1.
                 self.material_used+=1.
-                # reward new pixel
-                reward+=self.reward_matrix[idx]
+                # reward
+                reward+=self.reward_matrix[idx] # reward new pixel
+                reward+=TOTAL_MATERIAL_REWARD/self.max_material # reward step
+            if np.equal(self.agent_state, np.array([49,24])).all():
+                reward+=REACH_OTHER_SIDE_REWARD
 
         self.steps_taken=self.steps_taken+1
         material_is_used_up = self.material_used == self.max_material
@@ -216,7 +245,7 @@ def evaluate(visualize_trained_model = True, plot_history = True):
         env = BridgeEnvironment(render_episode=True)
         obs = env.reset()
         model = bl.A2C("MlpPolicy", env, verbose=0) #device=device
-        model.load("a2c_bridge_trained")
+        model.load("a2c_bridge")
         
 
         cv2.namedWindow('Game',cv2.WINDOW_NORMAL)
@@ -233,7 +262,7 @@ def evaluate(visualize_trained_model = True, plot_history = True):
                 break
     
     if plot_history:
-        history = np.load('training_history_trained.npy',allow_pickle=True).item()
+        history = np.load('training_history.npy',allow_pickle=True).item()
         plt.figure()
         for key, value in history.items():
             if key!="cum_reward":
@@ -261,13 +290,27 @@ if __name__ == "__main__":
             cv2.imshow('Game', env.bridge_state.T)
 
         # train
-        model = bl.A2C("MlpPolicy", env, verbose=0) #device=device
-        model.learn(total_timesteps=11000000)
+        model = bl.A2C("CnnPolicy", env, verbose=0) #device=device
+        model.learn(total_timesteps=200000)#~4min
         model.save("a2c_bridge")
         
         # save history:
         np.save('training_history.npy', history)
 
-        print("FINISHED TRAINING----------------------------------------------------------------------------")
+        print(f"FINISHED TRAINING for xxx episodes")
+        end = False
+        counter=1
+        while not end:
+            input_str = input("For how many timesteps do you want to continue training? 100000 ~ 4 mins")
+            iterations = int(input_str)
+            if iterations<=0:
+                end=True
+                waiting_ = input("Waiting for user to come back to screen. Will evaluate after pressing key")
+            else:
+                model.learn(total_timesteps=iterations)
+                model.save(f"a2c_bridge_{counter}")
+                np.save(f"training_history_{counter}.npy", history)
+                evaluate()
+                counter+=1
     else:
         evaluate()
