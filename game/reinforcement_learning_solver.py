@@ -1,4 +1,5 @@
 #import torch -> TODO: If import torch, change default type to double, because our problem is not well conditioned and we need the accuracy in calculation
+from typing import OrderedDict
 import gym
 from gym import Env, spaces
 import numpy as np
@@ -69,12 +70,12 @@ def get_neighbors(matrix, rowNumber, colNumber):
 class BridgeEnvironment(Env):
     def calc_base_compliance(self):
         self.reset()
-        self.base_compliance = compliance.getComplianceFromIndicator(self.bridge_state)
+        self.base_compliance = compliance.getComplianceFromIndicator(np.asarray(self.bridge_state, dtype=float)/255.)
         C_BASE = self.base_compliance
         print(f"The base compliance value is: {self.base_compliance}")
 
     def get_compliance_reward(self):
-        self.compliance_score = compliance.getComplianceFromIndicator(self.bridge_state) # calc compliance
+        self.compliance_score = compliance.getComplianceFromIndicator(np.asarray(self.bridge_state, dtype=float)/255.) # calc compliance
         return balanced_reward(self.compliance_score)
 
     # Define rewards for filling certain pixels
@@ -104,11 +105,11 @@ class BridgeEnvironment(Env):
     
     # Adapt the initial state to converge faster to a sensible structure
     def adapt_initial_state(self):
-        self.bridge_state[:,24]=1.
-        self.bridge_state[36,24:32]=1.
-        self.bridge_state[24,24:38]=1.
-        self.bridge_state[12,24:32]=1.
-        self.material_used = np.sum(self.bridge_state)
+        self.bridge_state[:,24]=255
+        self.bridge_state[36,24:32]=255
+        self.bridge_state[24,24:38]=255
+        self.bridge_state[12,24:32]=255
+        self.material_used = np.sum(self.bridge_state/255)
 
     # Initialize and reset game variables
     def init_game_variables(self):
@@ -119,7 +120,7 @@ class BridgeEnvironment(Env):
         self.material_used:int = 0
         self.max_material = int(self.n_pixels**2*0.12)
 
-        self.bridge_state = np.zeros(self.grid_size,dtype=float)
+        self.bridge_state = np.zeros(self.grid_size,dtype=np.uint8)
         self.adapt_initial_state()
 
         x_init = 1
@@ -131,9 +132,7 @@ class BridgeEnvironment(Env):
 
     # Return game state as concatenation of flattened brigde and agent(cursor) state
     def get_game_state(self):
-        flat_bridge = self.bridge_state.flatten()
-        flat_agent = self.agent_state.flatten()#should have no effect
-        return np.concatenate((flat_agent,flat_bridge))
+        return OrderedDict({"bridge":self.bridge_state, "agent":self.agent_state})
 
     # Returns true if the move does not bring us outside of the grid
     def is_move_valid(self, action):
@@ -151,20 +150,27 @@ class BridgeEnvironment(Env):
         self.calc_base_compliance()
         self.init_reward_matrix()
 
-        # state and action space
-        self.observation_shape = (self.n_pixels**2+2,)
-        lower = np.zeros(self.observation_shape)
-        upper = np.ones(self.observation_shape)
-        upper[0]=upper[1]=self.n_pixels-1
-        self.observation_space = spaces.Box(low=lower, high=upper, dtype=float)
+        # bridge space
+        self.bridge_shape = (1,self.n_pixels, self.n_pixels)
+        low_bridge = np.zeros(self.bridge_shape,dtype=np.uint8)
+        high_bridge = np.ones(self.bridge_shape,dtype=np.uint8)*255
+        self.bridge_space = spaces.Box(low=low_bridge, high=high_bridge, dtype=np.uint8)
+
+        # agent space
+        self.agent_shape = (2,)
+        self.agent_space = spaces.Box(low=np.zeros(self.agent_shape), high=np.ones(self.agent_shape)*(self.n_pixels-1))
+
+        # Complete spaces
         self.action_space = spaces.Discrete(4,)# 4 moves///// and 4 empty moves
         self.action_str = {0: "UP_Fill", 1:"RIGHT_Fill", 2:"DOWN_Fill", 3:"LEFT_Fill"}
         self.action_move = {0: np.array([0,1]), 1: np.array([1,0]), 2: np.array([0,-1]), 3:np.array([-1,0])}
 
+        self.observation_space = spaces.Dict({"bridge":self.bridge_space, "agent":self.agent_space})
+
     # Reset all game variables to the starting values
     def reset(self):
         self.init_game_variables()
-        assert(self.material_used==np.sum(self.bridge_state))
+        assert(self.material_used==np.sum(self.bridge_state/255))
         return self.get_game_state()
 
     # Render the current state
@@ -190,7 +196,7 @@ class BridgeEnvironment(Env):
             self.agent_state += self.action_move[action]
             idx = tuple(self.agent_state)
             if self.bridge_state[idx]<0.001:# not filled yet
-                self.bridge_state[idx]=1.
+                self.bridge_state[idx]=255
                 self.material_used+=1.
                 # reward
                 reward+=self.reward_matrix[idx] # reward new pixel
@@ -238,13 +244,17 @@ class BridgeEnvironment(Env):
     #     self.canvas[self.n_pixels-4,25]=0.
     #     self.canvas[25,25]
 
+def get_model(env):
+    #policy_kwargs={"features_extractor_class": CustomCombinedExtractor}
+    return bl.A2C("MultiInputPolicy", env, verbose=0)#,policy_kwargs=policy_kwargs) #device=device
+
 
 def evaluate(visualize_trained_model = True, plot_history = True):
     # visualize
     if visualize_trained_model:
         env = BridgeEnvironment(render_episode=True)
         obs = env.reset()
-        model = bl.A2C("MlpPolicy", env, verbose=0) #device=device
+        model = get_model(env)
         model.load("a2c_bridge")
         
 
@@ -270,9 +280,6 @@ def evaluate(visualize_trained_model = True, plot_history = True):
         plt.legend()
         plt.show()
 
-
-
-
 if __name__ == "__main__":
     # visualize?
     rendering=True
@@ -290,8 +297,8 @@ if __name__ == "__main__":
             cv2.imshow('Game', env.bridge_state.T)
 
         # train
-        model = bl.A2C("CnnPolicy", env, verbose=0) #device=device
-        model.learn(total_timesteps=200000)#~4min
+        model = get_model(env)
+        model.learn(total_timesteps=1500000)#~4min
         model.save("a2c_bridge")
         
         # save history:
